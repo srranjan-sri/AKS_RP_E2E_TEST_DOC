@@ -10,17 +10,18 @@ This guide provides step-by-step instructions for setting up and running E2E tes
 
 1. [Prerequisites](#prerequisites)
 2. [Clone the Repository](#clone-the-repository)
-3. [Azure Authentication](#azure-authentication)
-4. [Building aksdev CLI](#building-aksdev-cli)
-5. [Generating Azure Configuration](#generating-azure-configuration)
-6. [Running E2E Tests](#running-e2e-tests)
-7. [Troubleshooting](#troubleshooting)
-8. [Quick Reference](#quick-reference)
+3. [Setup go proxy](#setup-go-proxy)
+4. [Azure Authentication](#azure-authentication)
+5. [Building aksdev CLI](#building-aksdev-cli)
+6. [Generating Azure Configuration](#generating-azure-configuration)
+7. [Running E2E Tests](#running-e2e-tests)
+8. [Troubleshooting](#troubleshooting)
+9. [Quick Reference](#quick-reference)
 
 ---
 
 ## Prerequisites
-
+if you are not part of AKS Team then ensure you have the the have the [TM-AKS-ExtContributor](https://coreidentity.microsoft.com/manage/entitlement/entitlement/tmaksextcont-jawg) entitlement
 ### Required Tools
 
 | Tool | Purpose | Installation |
@@ -73,16 +74,50 @@ git clone git@ssh.dev.azure.com:v3/msazure/CloudNativeCompute/aks-rp rp
 cd rp
 ```
 
-### Step 3: Set Up Go Proxy (If Behind Corporate Firewall)
+## SetUp Go Proxy 
 
+### Generate PAT Token
+####How to get the PAT [Your Personal Access Token of Azure Devops of msazure org]:
+
+Go to https://dev.azure.com/msazure/_usersSettings/tokens
+Generate a token for "msazure" account under "Code" scope with "Read" access. You can specify an expiration date. Currently the longest expiration allowed is 7 days
+
+<img width="501" height="97" alt="image" src="https://github.com/user-attachments/assets/16bfc311-ca45-4fcb-9a30-ab007dac3e7b" />
+
+For more info go to https://dev.azure.com/msazure/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki/190872/aks-go-proxy
+
+Test your token with:
 ```bash
-# Source the Go proxy configuration
-source hack/aksbuilder_goproxy.sh
-
-# Or set manually
-export GOPROXY=https://proxy.golang.org,direct
-export GOPRIVATE=go.goms.io/*
+curl -v "https://whatever:$(az account get-access-token -o tsv --resource https://microsoft.onmicrosoft.com/AKSGoProxyMSFT --query accessToken)@goproxyprod.goms.io/aks/rp/protos/hcp/@v/v1.3.12.zip"
 ```
+Successful queries will get a 404. Unsuccessful queries will get a 401. If you are getting a 401 when connecting to goproxyprod.goms.io , check that your JWT has aksgoproxyreader in the roles attribute by decoding it:
+```bash
+az account get-access-token -o tsv --resource https://microsoft.onmicrosoft.com/AKSGoProxyMSFT --query accessToken | jq -R -r 'split(".") | .[1] ' | base64 --decode | jq .roles
+```
+You should see output like the following, if you do not, make sure you have the entitlement linked at the top of this page:
+```bash
+[
+ "aksgoproxyreader"
+]
+```
+for your own raw environment
+```bash
+goproxy_bearer_token=$(az account get-access-token -o tsv --resource https://microsoft.onmicrosoft.com/AKSGoProxyMSFT --query accessToken)
+export AKS_GOPROXY_TOKEN="${goproxy_bearer_token}"
+export GOPROXY="https://notinuse:${AKS_GOPROXY_TOKEN}@goproxyprod.goms.io"
+export GOPRIVATE="goms.io/aks/*,go.goms.io/aks/*,go.goms.io/caravel,go.goms.io/fleet*"
+export GONOPROXY=none
+```
+and a simpler way to set the env in your console is to run command below:
+```bash
+andliu@devbox:~/go/src/go.goms.io/aks/rp$ source ./hack/aksbuilder_goproxy.sh
+```
+and for the goproxy used in aksbuilder.
+you can do
+```bash
+export ENABLE_AKS_GOPROXY_AAD_AUTH=true
+```
+to enable it
 
 ---
 
@@ -100,70 +135,6 @@ az account set --subscription "<your-subscription-id>"
 # Verify
 az account show
 ```
-
-### Option B: Login with VS Code Remote Port Forwarding
-
-If you're working on a remote VM via VS Code Remote-SSH:
-
-1. **Enable Port Forwarding in VS Code:**
-   - Open Command Palette (`Ctrl+Shift+P`)
-   - Type "Forward a Port"
-   - Add port `8400`
-
-2. **Run az login:**
-   ```bash
-   az login
-   ```
-   - Complete authentication in browser
-   - The callback will work through the forwarded port
-
-### Option C: Device Code Flow
-
-If browser-based login doesn't work:
-
-```bash
-az login --use-device-code
-```
-
-Then:
-1. Open https://microsoft.com/devicelogin
-2. Enter the code displayed
-3. Complete authentication
-
-### Option D: Login with Microsoft Graph Scope
-
-If you encounter `AADSTS530084` error (Token Protection Policy):
-
-```bash
-az login --scope https://graph.microsoft.com//.default
-```
-
-### Option E: Service Principal Login
-
-If you have a service principal with required permissions:
-
-```bash
-az login --service-principal \
-  --username <app-id> \
-  --password <client-secret> \
-  --tenant 72f988bf-86f1-41af-91ab-2d7cd011db47
-```
-
-### Verify Authentication
-
-```bash
-# Check current account
-az account show --query "{Name:name, SubscriptionId:id}" -o table
-
-# List your role assignments
-az role assignment list \
-  --assignee <your-email> \
-  --subscription <subscription-id> \
-  --query "[].{Role:roleDefinitionName, Scope:scope}" \
-  -o table
-```
-
----
 
 ## Building aksdev CLI
 
@@ -514,9 +485,8 @@ mkdir -p ~/work
 ## Additional Resources
 
 - **E2E Code:** `test/e2e/` directory
-- **Test Suites:** `test/e2e/suites/` directory
-- **aksdev Source:** `test/e2e/cmd/aksdev/`
-- **Internal Wiki:** https://msazure.visualstudio.com/CloudNativeCompute/_wiki/wikis/CloudNativeCompute.wiki/15732/How-to-use-E2E-in-Development
+- **AKS_RP E2E Testing:** https://microsoft.sharepoint.com/:p:/r/teams/Aznet/_layouts/15/Doc.aspx?sourcedoc=%7B21EC7F02-952E-4C87-9890-A1F15AC078C1%7D&file=AKS-RP%20E2E%20Testing.pptx&action=edit&mobileredirect=true&share=IQECf-whLpWHTJiQofFawHjBAeL5W0etQauBRiq3eLL_CS0
+- **E2E Test Name:** https://dev.azure.com/msazure/CloudNativeCompute/_git/aks-rp?path=/test/e2e/suites/matrixdata/data/e2ev2_checkin.test_matrix.json
 
 ---
 
